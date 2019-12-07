@@ -1,0 +1,784 @@
+---
+title: "Distinguishing among constant rate & pure birth trees"
+author: "Austin Patton"
+date: "January 18, 2018"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd('~/Dropbox/Research/BMbdSim/Patton_Week_Harmon/')
+```
+
+## Define new functions
+```{r}
+rgbmme <- function(n,lambda0,mu0,sigma_lambda,sigma_mu,rho){
+  # draws n random variates from the gbmme distribution
+  # these consist of a waiting time, a birth rate, a death rate and a decision 
+  # lambda0 = birth rate at previous node
+  # mu0 = death rate at previous node
+  # sigma_lambda = stochasticity of the birth rate
+  # sigma_mu = stochasticity of the death rate
+  # rho =  correlation of birth and death rates
+  
+  # packs the aforementioned objects into a cov matrix
+  Sigma <- matrix(c(sigma_lambda^2,
+                    rho*sigma_lambda*sigma_mu,
+                    rho*sigma_lambda*sigma_mu,
+                    sigma_mu^2),
+                  ncol=2,nrow=2)
+
+  # S will be the cov matrix for the mvnorm dist
+  S <- matrix(0,ncol=2,nrow=2)
+  for(i in 1:2){ # performs the conversion
+    for(j in 1:2){
+      S[i,j] <- lambda0*mu0*(exp(Sigma[i,j])-1)
+    }
+  }
+  
+  # depends on package "mvtnorm"
+  require(mvtnorm)
+  
+  # calculates the probability density function of the waiting times
+  fW <- function(t,sigma,r){
+    flambda <- function(x){
+      value <- exp(x-exp(x)*t)*dnorm(x,log(r),sigma)
+      return(value)
+    }
+    integrate(flambda,-Inf,+Inf,rel.tol=.Machine$double.eps^0.5,subdivisions = 500)
+  }
+  
+  # preps the pdf for numerical integration
+  ff <- function(t){
+    sigma <- Sigma[1,1]+Sigma[2,2]
+    r <- lambda0+mu0
+    fW(t,sigma,r)$value
+  }
+  
+  # numerical evaluation of the cdf at time = tau
+  FW <- function(tau){
+    integrate(Vectorize(ff,'t'),0,tau,rel.tol=.Machine$double.eps^0.5)$value
+  }
+  
+  # draws random waiting times
+  U <- runif(n)
+  Ws <- NULL
+  for(u in U){
+    
+    # the root of this function is our random waiting time
+    rootme <- function(W){
+      FW(W)-u
+    }
+    
+    # a method that detects when the solution
+    # lies outside the interval being searched
+    # and expands the interval until the solution
+    # has been found.
+    lwr <- 1e-5
+    upr <- 1000
+    # new_rates <- c(lambda0,mu0)
+    # badint <- FALSE
+    # while(FW(upr) < 0.5){
+    #   # sometimes the integration fails for a particular pair of rates, so we redraw them on the fly
+    #   new_rates <- exp(rmvnorm(1,c(log(lambda0),log(mu0)),S*W0))
+    #   lambda0 <- new_rates[1]
+    #   mu0 <- new_rates[2]
+    #   ff <- function(t){
+    #     sigma <- Sigma[1,1]+Sigma[2,2]
+    #     r <- lambda0+mu0
+    #     fW(t,sigma,r)$value
+    #   }
+    #   badint <- TRUE
+    # }
+    nonos <- TRUE
+    while(nonos){
+      nonos <- tryCatch(
+        uniroot(rootme,c(lwr,upr)),
+        error = function(e) {
+          return(TRUE)
+        }
+      )
+      if(typeof(nonos) == "list"){
+        sol <- nonos
+        nonos <- FALSE
+      }
+      upr <- upr + 1000
+      lwr <- lwr / 10
+    }
+    Ws <- c(Ws,sol$root)
+    
+  }
+  
+  # accumulates rates (rates[1,] = birth rates, rates[2,] = death rates)
+  rates <- NULL
+  for(W in Ws){
+    rates <- rbind(rates,exp(rmvnorm(1,c(log(lambda0),log(mu0)),S*W)))
+  }
+  
+  # accumulates decisions (1 = birth, 0 = death)
+  birth <- NULL
+  for(i in 1:n){
+    birth <- c(birth,rbinom(1,1,rates[i,1]/(rates[i,1]+rates[i,2])))
+  }
+
+  # output consists of a vector:
+  # first column = waiting times
+  # second column = birth rates
+  # third column = death rates
+  # fourth column = birth events (zeros indicate extinctions)
+  # whether or not the integration broke
+  out <- cbind(Ws,rates,birth)#,badint,new_rates[1],new_rates[2])
+  colnames(out) <- c("waiting times","birth rates","death rates","birth events")#,"did the integration break?","new lambda0","new mu0")
+  return(out)
+}
+
+rpatton <- function(n,lambda0,mu0,sigma_lambda,sigma_mu,rho,prev_values = c(0,0,0)){
+  # draws n random variates from pattons distribution
+  # these consist of a waiting time, a birth rate, a death rate and a decision 
+  # lambda0 = birth rate at previous node
+  # mu0 = death rate at previous node
+  # sigma_lambda = stochasticity of the birth rate
+  # sigma_mu = stochasticity of the death rate
+  # rho =  correlation of birth and death rates
+  
+  # packs the aforementioned objects into a vcv matrix
+  Sigma <- matrix(c(sigma_lambda^2,
+                    rho*sigma_lambda*sigma_mu,
+                    rho*sigma_lambda*sigma_mu,
+                    sigma_mu^2),
+                  ncol=2,nrow=2)
+  # S will be the vcv matrix for the mvnorm dist
+  S <- matrix(0,ncol=2,nrow=2)
+  rootme2 <- function(sij){  
+    # sets up function for converting between lnnormal and normal vcv-matrices
+    sij - exp(0.5*(Sigma[i,i]+Sigma[j,j]))*(exp(Sigma[i,j])-1)
+  }
+  for(i in 1:2){ # performs the conversion
+    for(j in 1:2){
+      S[i,j] <- uniroot(rootme2,c(1e-5,100))$root
+    }
+  }
+  
+  # depends on package "mvtnorm"
+  require(mvtnorm)
+  
+  # calculates the probability density function of the waiting times
+  fW <- function(t,sigma,r){
+    flambda <- function(x){
+      value <- exp(x-exp(x)*t)*dnorm(x,log(r),sigma)
+      return(value)
+    }
+    integrate(flambda,-Inf,+Inf,rel.tol=.Machine$double.eps^0.5,subdivisions = 500)
+  }
+  
+  # preps the pdf for numerical integration
+  ff <- function(t){
+    sigma <- Sigma[1,1]+Sigma[2,2]
+    r <- lambda0+mu0
+    fW(t,sigma,r)$value
+  }
+  
+  # numerical evaluation of the cdf at time = tau
+  FW <- function(tau){
+    integrate(Vectorize(ff,'t'),0,tau,rel.tol=.Machine$double.eps^0.5)$value
+  }
+  
+  # draws random waiting times
+  U <- runif(n)
+  Ws <- NULL
+  for(u in U){
+    
+    # the root of this function is our random waiting time
+    rootme <- function(W){
+      FW(W)-u
+    }
+    
+    # a method that detects when the solution
+    # lies outside the interval being searched
+    # and expands the interval until the solution
+    # has been found.
+    lwr <- 1e-5
+    upr <- 1000
+    new_rates <- c(lambda0,mu0)
+    badint <- FALSE
+    while(FW(upr) < 0.5){
+      # sometimes the integration fails for a particular pair of rates, so we redraw them on the fly
+      new_rates <- exp(rmvnorm(1,c(log(prev_values[2]),log(prev_values[3])),S*prev_values[1]))
+      lambda0 <- new_rates[1]
+      mu0 <- new_rates[2]
+      ff <- function(t){
+        sigma <- Sigma[1,1]+Sigma[2,2]
+        r <- lambda0+mu0
+        fW(t,sigma,r)$value
+      }
+      badint <- TRUE
+    }
+    nonos <- TRUE
+    while(nonos){
+      nonos <- tryCatch(
+        uniroot(rootme,c(lwr,upr)),
+        error = function(e) {
+          return(TRUE)
+        }
+      )
+      if(typeof(nonos) == "list"){
+        sol <- nonos
+        nonos <- FALSE
+      }
+      upr <- upr + 1000
+      lwr <- lwr / 10
+    }
+    Ws <- c(Ws,sol$root)
+    
+  }
+  
+  # accumulates rates (rates[1,] = birth rates, rates[2,] = death rates)
+  rates <- NULL
+  for(W in Ws){
+    rates <- rbind(rates,exp(rmvnorm(1,c(log(lambda0),log(mu0)),S*W)))
+  }
+  
+  # accumulates decisions (1 = birth, 0 = death)
+  birth <- NULL
+  for(i in 1:n){
+    birth <- c(birth,rbinom(1,1,rates[i,1]/(rates[i,1]+rates[i,2])))
+  }
+
+  # output consists of a vector:
+  # first column = waiting times
+  # second column = birth rates
+  # third column = death rates
+  # fourth column = birth events (zeros indicate extinctions)
+  out <- cbind(Ws,rates,birth,badint,new_rates[1],new_rates[2])
+  colnames(out) <- c("waiting times","birth rates","death rates","birth events","did the integration break?","new lambda0","new mu0")
+  return(out)
+}
+
+sim.rgbmme.tree <- function(b=1, d=0.1, sigma_lambda, sigma_mu, rho, time.stop=4, extinct=TRUE) {
+
+  
+
+  return.all.extinct = extinct;
+  
+    edge <- rbind(c(1, 2), c(1, 3)); # this is a starting edge matrix
+    edge.length <- rep(NA, 2);
+    alive <- rep(TRUE, 2); # marker for live lineages
+    node.time <- rep(0, 2) # marks depth of all nodes
+    t <- 0; # time at any point in the tree
+    next.node <- 4;
+    bd <- matrix(nrow=3, ncol=3)
+    bd[,1]<- 1:3
+    bd[,2] <- b
+    bd[,3] <- d
+    ############
+    repeat {
+
+      if (sum(alive) == 0) break;
+      
+      # select random lineage in tree
+      random_lineage <- round(runif(1, min = 1, max = sum(alive)));
+      e <- matrix(edge[alive,], ncol = 2);
+      parent <- e[random_lineage,2];
+      bdrow <- which(bd[,1]==parent)
+      dt <- rgbmme(1, bd[bdrow,2], bd[bdrow,3], sigma_lambda,sigma_mu,rho);
+      t <- node.time[alive][random_lineage] + dt[1];
+
+      if(t  >= time.stop) { 
+        edge.length[alive][random_lineage] <- time.stop - node.time[alive][random_lineage]
+        alive[alive][random_lineage]<-F
+      } else {
+        if(dt[4]==0) { # death event
+          edge.length[alive][random_lineage] <- t - node.time[alive][random_lineage];
+          alive[alive][random_lineage]<-F
+        } else { #birth event
+          alive[alive][random_lineage] <- FALSE;
+          edge <- rbind(edge, c(parent, next.node), c(parent, next.node + 1));
+          bd<-rbind(bd, c(next.node, dt[2], dt[3]), c(next.node+1, dt[2], dt[3]))
+          next.node <- next.node + 2;
+          alive <- c(alive, TRUE, TRUE);
+          node.time <- c(node.time, t, t);
+          x <- which(edge[,2] == parent);
+          edge.length[x] <- t - node.time[x];
+          edge.length<-c(edge.length, NA, NA);
+          
+        }
+        
+      }
+      
+    }  
+  
+
+  # old geiger trickery
+  n <- -1
+  for (i in 1:max(edge)) {
+    if (any(edge[, 1] == i)) {
+      edge[which(edge[, 1] == i), 1] <- n
+      edge[which(edge[, 2] == i), 2] <- n
+      n <- n - 1
+    }
+  }
+  edge[edge > 0] <- 1:sum(edge > 0)
+  tip.label <- 1:sum(edge > 0)
+  mode(edge) <- "character"
+  obj <- list(edge = edge, edge.length = edge.length, tip.label=tip.label);
+  class(obj) <- "phylo";
+  
+  obj <- old2new.phylo(obj);
+  obj <- read.tree(text = write.tree(obj));
+  
+  
+  return (obj);
+}
+
+```
+
+
+## Produce initial set of trees
+```{r}
+library(parallel)
+
+#BD time-varying
+f <- function(i) {sim.rgbmme.tree(b=1, d=0.2, sigma_lambda=0.1, sigma_mu=0.1, rho=0.0, time.stop=8,extinct=FALSE)}
+BDvar.no.cor <- mclapply(1:100, f, mc.cores=11)
+save(BDvar.no.cor, file = 'BDvar.no.cor.Rsave')
+
+f <- function(i) {sim.rgbmme.tree(b=1, d=0.2, sigma_lambda=0.1, sigma_mu=0.1, rho=0.75, time.stop=8,extinct=FALSE)}
+BDvar.rho.75 <- mclapply(1:100, f, mc.cores=11)
+save(BDvar.rho.75, file = 'BDvar.rho.75.Rsave')
+
+# BDvar with high lambda variance
+f <- function(i) {sim.rgbmme.tree(b=1, d=0.1, sigma_lambda=0.5, sigma_mu=0.1, rho=0, time.stop=3,extinct=FALSE)}
+LamVar.BigVar <- mclapply(1:10, f, mc.cores=2)
+
+plot(res)
+
+LamVarLots.no.cor <- list()
+for(i in 1:100){
+  LamVarLots.no.cor[[i]] <- sim.rgbmme.tree(b=1, d=0.1, sigma_lambda=0.5, 
+                                   sigma_mu=0.1, rho=0, 
+                                   time.stop=3,extinct=FALSE)
+}
+
+
+# lambda varies more
+f <- function(i) {sim.rgbmme.tree(b=1, d=0.2, sigma_lambda=0.25, sigma_mu=0.1, rho=0.0, time.stop=8,extinct=FALSE)}
+LamVar.no.cor <- mclapply(1:100, f, mc.cores=11)
+save(LamVar.no.cor, file = 'LamVar.no.cor.Rsave')
+
+f <- function(i) {sim.rgbmme.tree(b=1, d=0.2, sigma_lambda=0.25, sigma_mu=0.1, rho=0.75, time.stop=8,extinct=FALSE)}
+LamVar.rho.75 <- mclapply(1:100, f, mc.cores=11)
+save(LamVar.rho.75, file = 'LamVar.rho.75.Rsave')
+
+# mu varies more
+f <- function(i) {sim.rgbmme.tree(b=1, d=0.2, sigma_lambda=0.1, sigma_mu=0.25, rho=0.0, time.stop=8,extinct=FALSE)}
+MuVar.no.cor <- mclapply(1:100, f, mc.cores=11)
+save(MuVar.no.cor, file = 'MuVar.no.cor.Rsave')
+
+f <- function(i) {sim.rgbmme.tree(b=1, d=0.2, sigma_lambda=0.1, sigma_mu=0.25, rho=0.75, time.stop=8,extinct=FALSE)}
+MuVar.rho.75 <- mclapply(1:100, f, mc.cores=11)
+save(MuVar.rho.75, file = 'MuVar.rho.75.Rsave')
+
+# PB time-varying
+f <- function(i) {sim.rgbmme.tree(b=1, d=0.0, sigma_lambda=0.1, sigma_mu=0.0, rho=0.0, time.stop=8,extinct=FALSE)}
+PBvar.no.cor <- mclapply(1:100, f, mc.cores=11)
+save(PBvar.no.cor, file = 'PBvar.no.cor.Rsave')
+
+# PB time-constant
+f <- function(i) {sim.bdtree(b=1, d=0.0,t = 4, stop='time', extinct = FALSE)}
+PBconst.no.cor <- mclapply(1:100, f, mc.cores=11)
+save(PBconst.no.cor, file = 'PBconst.no.cor.Rsave')
+
+#BD time-constant
+f <- function(i) {sim.bdtree(b=1, d=0.2,t = 4, stop='time', extinct = FALSE)}
+BDconst <- mclapply(1:100, f, mc.cores=11)
+save(BDconst, file = 'BDconst.Rsave')
+```
+
+## Load initial set of trees produced by the new function
+
+```{r}
+setwd('~/Dropbox/Research/BMbdSim/Patton_Week_Harmon/InitialTreeSets/')
+load('BDvar.no.cor.Rsave')
+load('BDvar.rho.75.Rsave')
+load('LamVar.no.cor.Rsave')
+load('LamVar.rho.75.Rsave')
+load('MuVar.no.cor.Rsave')
+load('MuVar.rho.75.Rsave')
+load('PBvar.no.cor.Rsave')
+load('PBconst.no.cor.Rsave')
+load('BDconst.Rsave')
+
+```
+
+## Summarize Trees
+With all the trees loaded, let's now summarize each tree with a suite of summary statistics.
+```{r}
+setwd('~/Dropbox/Research/BMbdSim/Patton_Week_Harmon/InitialTreeSets/')
+require(RPANDA)
+
+cherries <- function (phy) {
+  if (!inherits(phy, "phylo")) 
+    stop("object \"phy\" is not of class \"phylo\"")
+  n <- length(phy$tip.label)
+  nb.node <- phy$Nnode
+  if (nb.node != n - 1) 
+    stop("\"phy\" is not fully dichotomous")
+  if (n < 4) 
+    stop("not enough tips in your phylogeny for this analysis")
+  cherry <- sum(tabulate(phy$edge[, 1][phy$edge[, 2] <= n]) == 
+                  2)
+  small.n <- n < 20
+  if (small.n) {
+    P.yule <- f.cherry.yule(n, cherry)
+    P.uniform <- f.cherry.uniform(n, cherry)
+  }
+  else {
+    P.yule <- 2 * (1 - pnorm(abs(cherry - n/3)/sqrt(2 * n/45)))
+    mu.unif <- n * (n - 1)/(2 * (2 * n - 5))
+    sigma2.unif <- n * (n - 1) * (n - 4) * (n - 5)/(2 * (2 * 
+                                                           n - 5)^2 * (2 * n - 7))
+    P.uniform <- 2 * (1 - pnorm(abs(cherry - mu.unif)/sqrt(sigma2.unif)))
+  }
+  cat("\nAnalysis of the Number of Cherries in a Tree\n\n")
+  cat("Phylogenetic tree:", deparse(substitute(phy)), "\n")
+  cat("Number of tips:", n, "\n")
+  cat("Number of cherries:", cherry, "\n\n")
+  cat("Null hypothesis: Yule model\n")
+  cat("    P-value =", round(P.yule, 4), "\n\n")
+  cat("Null hypothesis: uniform model\n")
+  cat("    P-value =", round(P.uniform, 4), "\n\n")
+  if (!small.n) 
+    cat("(P-values were computed using normal approximations)\n")
+  return(cherry)
+}
+
+revised_spectR<-function (phylo, method = c("standard")) {
+  #define skewness function				
+  skewness <- function(x, na.rm = FALSE) {
+    if (is.matrix(x)) 
+      apply(x, 2, skewness, na.rm = na.rm)
+    else if (is.vector(x)) {
+      if (na.rm) 
+        x <- x[!is.na(x)]
+      n <- length(x)
+      (sum((x - mean(x))^3)/n)/(sum((x - mean(x))^2)/n)^(3/2)
+    }
+    else if (is.data.frame(x)) 
+      sapply(x, skewness, na.rm = na.rm)
+    else skewness(as.vector(x), na.rm = na.rm)
+  }
+  
+  #define density function
+  ##gaussian kernel
+  sigma = 0.1
+  gKernel <- function(x) 1/(sigma*sqrt(2*pi)) * exp(-(x^2)/2*sigma^2)
+  kernelG <- function(x, mean=0, sd=1) dnorm(x, mean = mean, sd = sd)
+  
+  ##kernel density estimate
+  dens <- function(x, bw = bw.nrd0, kernel = kernelG, n = 4096,
+                   from = min(x) - 3*sd, to = max(x) + 3*sd, adjust = 1,
+                   ...) {
+    if(has.na <- any(is.na(x))) {
+      x <- na.omit(x)
+      if(length(x) == 0)
+        stop("no finite or non-missing data!")
+    }
+    sd <- (if(is.numeric(bw)) bw[1] else bw(x)) * adjust
+    X <- seq(from, to, len = n)
+    M <- outer(X, x, kernel, sd = sd, ...)
+    structure(list(x = X, y = rowMeans(M), bw = sd,
+                   call = match.call(), n = length(x),
+                   data.name = deparse(substitute(x)),
+                   has.na = has.na), class =  "density")
+  }
+  
+  #define integral function
+  integr <- function(x, f)
+  {
+    
+    # var is numeric
+    if (!is.numeric(x))
+    {
+      stop('The variable of integration "x" is not numeric.')
+    }
+    
+    # integrand is numeric
+    if (!is.numeric(f))
+    {
+      stop('The integrand "f" is not numeric.')
+    }
+    
+    # length(var)=length(int)
+    if (length(x) != length(f))
+    {
+      stop('The lengths of the variable of integration and the integrand do not match.')
+    }
+    
+    # get lengths of var and integrand
+    n = length(x)
+    
+    # trapezoidal integration
+    integral = 0.5*sum((x[2:n] - x[1:(n-1)]) * (f[2:n] + f[1:(n-1)]))
+    
+    # print definite integral
+    return(integral)
+  }
+  if (method == "standard") {
+    e = eigen(graph.laplacian(graph.adjacency(data.matrix(dist.nodes(phylo)), 
+                                              weighted = T), normalized = F), symmetric = T, only.values = T)
+    x = subset(e$values, e$values >= 1)
+    d = dens(log(x))
+    dsc = d$y/(integr(d$x,d$y))
+    principal_eigenvalue <- max(x)
+    skewness <- skewness(x)
+    peak_height <- max(dsc)
+    gaps<-abs(diff(x))
+    gapMat <- as.matrix(gaps)
+    modalities <- c(1:length(gapMat))
+    gapMatCol <- cbind(modalities, gapMat)
+    eigenGap <- subset(gapMatCol, gapMatCol[, 2] == max(gapMatCol[,2]))
+    res<-list(eigenvalues=x,principal_eigenvalue=principal_eigenvalue, 
+              asymmetry=skewness, peakedness=peak_height,eigengap= eigenGap[,1])   
+  }
+  if (method == "normal") {
+    e = eigen(graph.laplacian(graph.adjacency(data.matrix(dist.nodes(phylo)), 
+                                              weighted = T), normalized = T), symmetric = T, only.values = T)
+    x = subset(e$values, e$values >= 0)
+    d = dens(log(x))
+    dsc = d$y/(integr(d$x,d$y))
+    principal_eigenvalue <- max(x)
+    skewness <- skewness(x)
+    peak_height <- max(dsc)
+    gaps <- abs(diff(x))
+    gapMat <- as.matrix(gaps)
+    modalities <- c(1:length(gapMat))
+    gapMatCol <- cbind(modalities, gapMat)
+    eigenGap <- subset(gapMatCol, gapMatCol[, 2] == max(gapMatCol[,2]))
+    res<-list(eigenvalues=x,principal_eigenvalue=principal_eigenvalue, 
+              asymmetry=skewness, peakedness=peak_height,eigengap= eigenGap[,1])    
+  }
+  class(res) <- "spectR"
+  return(res)
+}
+
+
+get.spect <- function(tree.list = treeset$TreeList, tree.names = treeset$TreeNames$TreeList, summary.file = "", out.dir = ""){
+  summ <- read.csv(summary.file)
+  ln.prin.eig <- as.vector(NA)
+  peakedness <- as.vector(NA)
+  eigengap <- as.vector(NA)
+  asymmetry <- as.vector(NA)
+  for(i in 1:length(tree.list)){
+    nam <- paste0("_",tree.names[i])
+    spect <- revised_spectR(tree.list[[i]])
+    assign(nam, spect)
+    save(spect, file = paste0("./", out.dir,"/",out.dir, nam, ".RData"))
+    ln.prin.eig[i] <- log(spect$principal_eigenvalue)
+    peakedness[i] <- spect$peakedness
+    eigengap[i] <- spect$eigengap[[1]]
+    #peakedness2[i] <- spect$peakedness2
+    asymmetry[i] <- spect$asymmetry
+  }
+  summ <- cbind(summ, ln.prin.eig, peakedness, asymmetry, eigengap)
+  summ <- summ[,-1]
+  spect.res <- list(spect,summ)
+  write.csv(summ, file = summary.file)
+  return(spect.res)
+}
+
+```
+
+```{r}
+setwd('~/Dropbox/Research/BMbdSim/Patton_Week_Harmon/InitialTreeSets/')
+library(apTreeshape)
+library(RPANDA)
+library(igraph)
+library(phytools)
+
+# Initialize summary dataframe
+treeset.summary <- data.frame(TreeSet=integer(), TreeNum=integer(), Gamma=integer(), Colless_NoNorm=integer(),
+                            Colless_Yule=integer(), Colless_PDA=integer(), Sackin_NoNorm=integer(), 
+                            Sackin_Yule=integer(), Sackin_PDA=integer(), Mean_Terminal_BL=integer(),
+                            Median_Terminal_BL=integer(), Mode_Terminal_BL=integer(), Terminal_BL_Var=integer(),
+                            Mean_Internal_BL=integer(), Median_Internal_BL=integer(), Mode_Internal_BL=integer(),
+                            Internal_BL_Var=integer(), Int_Term_BL_Ratio=integer(), Cherries=integer(),
+                            ln.prin.eig=integer(), asymmetry=integer(), peakedness=integer(), eigengap=integer())
+
+# Quick function to calculate the mode
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+# Summarize trees
+summarize.trees <- function(TreeSet = TreeSetList, TreeType='TreeSetName'){
+  for(i in 1:length(TreeSet)){
+    tree <- TreeSet[[i]]
+      if(length(tree$tip.label) >= 10){
+        a <- as.treeshape(tree)
+        colless <- colless(a)
+        colless_yule <- colless(a, norm='yule')
+        colless_pda <- colless(a, norm='pda')
+        
+        sackin <- sackin(a)
+        sackin_yule <- sackin(a, norm='yule')
+        sackin_pda <- sackin(a, norm='pda')
+        
+        gamma <- gammaStat(tree)
+        
+        term_bl <- as.vector(branching.times(tree))
+        mean_term_bl <- mean(term_bl)
+        median_term_bl <- median(term_bl)
+        mode_term_bl <- getmode(term_bl)
+        term_bl_var <- var(term_bl)
+        
+        int_bl <- tree$edge.length[tree$edge[,2] > Ntip(tree)]
+        mean_int_bl <- mean(int_bl)
+        median_int_bl <- median(int_bl)
+        mode_int_bl <- getmode(int_bl)
+        int_bl_var <- var(int_bl)
+        
+        int_term_MeanRatio <- mean_int_bl/mean_term_bl
+        
+        tree_cherry <- cherries(tree)
+        
+        spect <- revised_spectR(TreeSet[[i]])
+      
+        treeset.summary[i,1] <- TreeType
+        treeset.summary[i,2] <- i
+        treeset.summary[i,3] <- gamma
+        treeset.summary[i,4] <- colless
+        treeset.summary[i,5] <- colless_yule
+        treeset.summary[i,6] <- colless_pda
+        treeset.summary[i,7] <- sackin
+        treeset.summary[i,8] <- sackin_yule
+        treeset.summary[i,9] <- sackin_pda
+        treeset.summary[i,10] <- mean_term_bl
+        treeset.summary[i,11] <- median_term_bl
+        treeset.summary[i,12] <- mode_term_bl
+        treeset.summary[i,13] <- term_bl_var 
+        treeset.summary[i,14] <- mean_int_bl
+        treeset.summary[i,15] <- median_int_bl
+        treeset.summary[i,16] <- mode_int_bl
+        treeset.summary[i,17] <- int_bl_var 
+        treeset.summary[i,18] <- int_term_MeanRatio
+        treeset.summary[i,19] <- tree_cherry
+        treeset.summary[i,20] <- spect$principal_eigenvalue
+        treeset.summary[i,21] <- spect$asymmetry
+        treeset.summary[i,22] <- spect$peakedness
+        treeset.summary[i,23] <- spect$eigengap
+      } else {
+      treeset.summary[i,1] <- TreeType
+      treeset.summary[i,2] <- i
+      treeset.summary[3,1:23] <- NA
+    }
+  }
+  return(treeset.summary)
+}
+
+treesets <- list(BDvar.no.cor, BDvar.rho.75, LamVar.no.cor, LamVar.rho.75, 
+              MuVar.no.cor, MuVar.rho.75, PBvar.no.cor, PBconst.no.cor, 
+              BDconst)
+treeset.names <- c('BDvar.no.cor', 'BDvar.rho.75', 'LamVar.no.cor', 'LamVar.rho.75', 
+              'MuVar.no.cor', 'MuVar.rho.75', 'PBvar.no.cor', 'PBconst.no.cor', 
+              'BDconst')
+
+for(i in 1:length(treesets)){
+  class(treesets[[i]]) <- 'multiPhylo'
+  
+  ltt_plot <- ltt95(treesets[[i]], log=T, method = 'lineages', mode = 'median')
+
+  pdf(paste0(treeset.names[i],'_ltt_plot.pdf'))
+  plot(ltt_plot, xaxis='negative')
+  dev.off()
+  
+  summ <- summarize.trees(TreeSet = treesets[[i]], TreeType = paste0(treeset.names[i]))
+  write.csv(summ, paste0(treeset.names[i], '_summary.csv'))
+}
+
+```
+
+
+## Distinguish Among Trees
+
+Now we will use random forests to distinguish among Pure Birth and Constant Rate trees. This will be done within sets (e.g. among trees produced by TreeSim). If the performance is similar across each set, then we know that our summary statistics will be sufficient. 
+
+### GBMME
+```{r}
+setwd('~/Dropbox/Research/BMbdSim/Patton_Week_Harmon/')
+library(randomForest)
+
+BDvar.no.cor.summ <- read.csv('BDvar.no.cor_summary.csv')
+BDvar.rho.75.summ <- read.csv('BDvar.rho.75_summary.csv')
+LamVar.no.cor.summ <- read.csv('LamVar.no.cor_summary.csv')
+LamVar.rho.75.summ <- read.csv('LamVar.rho.75_summary.csv')
+MuVar.no.cor.summ <- read.csv('MuVar.no.cor_summary.csv')
+MuVar.rho.75.summ <- read.csv('MuVar.rho.75_summary.csv')
+PBvar.no.cor.summ <- read.csv('PBvar.no.cor_summary.csv')
+PBconst.no.cor.summ <- read.csv('PBconst.no.cor_summary.csv')
+BDconst.summ <- read.csv('BDconst_summary.csv')
+
+summBMbd <- rbind(BDvar.no.cor.summ, BDvar.rho.75.summ, LamVar.no.cor.summ, LamVar.rho.75.summ, MuVar.no.cor.summ,
+                  MuVar.rho.75.summ, PBvar.no.cor.summ, PBconst.no.cor.summ, BDconst.summ)
+
+summBMbd <- summBMbd[,-1]
+colnames(summBMbd)[[1]] <- 'TreeType'
+
+summBMbd.noMiss <- summBMbd[complete.cases(summBMbd),]
+
+# Prediction using Random Forests
+RF.BMbd.dat <- summBMbd.noMiss[,c(1,3,4,7,10:23)]
+RF.BMbd.dat$TreeType <- as.factor(RF.BMbd.dat$TreeType)
+train <- sample(1:nrow(RF.BMbd.dat), 500)
+
+RF.BMbd.fit <- randomForest(x=RF.BMbd.dat[,2:17], y=RF.BMbd.dat$TreeType, subset=train, ntree = 1000, mtry = 4, proximity = T)
+
+RF.BMbd.fit
+
+plot(RF.BMbd.fit)
+
+varImpPlot(RF.BMbd.fit)
+
+
+
+
+
+#TreeType <- c(rep('BMbdSim_CR', 100), rep('BMbdSim_PB', 100), rep('BMbdSim_CR.stretch', 50), rep('BMbdSim_PB.stretch', 50))
+#summ.all.BMbd <- rbind(summBMbd, summBMbd.stretch)
+#summ.all.BMbd[,1] <- TreeType
+#colnames(summ.all.BMbd)[[1]] <- 'TreeType'
+
+
+#RF.allBMbd.dat <- summ.all.BMbd[,c(1,3,4,7,10:23)]
+#RF.allBMbd.dat$TreeType <- as.factor(RF.allBMbd.dat$TreeType)
+#train <- sample(1:nrow(RF.allBMbd.dat), 150)
+
+#RF.allBMbd.fit <- randomForest(x=RF.allBMbd.dat[,2:17], y=RF.allBMbd.dat$TreeType, subset=train, ntree = 1000, mtry = 4, proximity = T)
+
+#RF.allBMbd.fit
+
+#plot(RF.allBMbd.fit)
+
+#varImpPlot(RF.allBMbd.fit)
+
+##############################################################
+#    Now analyze subsequent datasets using a PCA (prcomp)    #
+##############################################################
+#library(ggplot2)
+#library(rgl)
+#library(plotly)
+
+# First, the results from the PCA
+#pca_500 <- prcomp(summBMbd.noMiss[,2:17], scale=TRUE)
+
+```
+
+
+
+
+
+
